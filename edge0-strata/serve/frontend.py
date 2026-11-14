@@ -26,7 +26,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import jinja2
-from jinja2.sandbox import ImmutableSandboxedEnvironment
+try:
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+except ImportError:  # a bundled Python whose jinja2 lacks the sandbox submodule (#217): serve must still start
+    ImmutableSandboxedEnvironment = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,7 +50,15 @@ class ChatTemplate:
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
             return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
 
-        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
+        # The template is the model's own chat_template.jinja from the hash-verified pack, and Hugging Face renders
+        # the same templates with a plain Environment, so when the sandbox submodule is missing from this Python
+        # (#217: the Windows standalone bundle's jinja2 has no sandbox) the plain environment renders identically.
+        if ImmutableSandboxedEnvironment is not None:
+            env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
+        else:
+            LOGGER.warning("jinja2.sandbox is missing from this Python; rendering the chat template without the "
+                           "sandbox (#217)")
+            env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
