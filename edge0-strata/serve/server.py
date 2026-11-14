@@ -31,6 +31,7 @@ import contextlib
 import collections
 import base64
 import hashlib
+import importlib.util
 import hmac
 import codecs
 import ctypes
@@ -60,6 +61,29 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
+
+
+def require_runtime_packages() -> None:
+    # #217: the Windows standalone (edge0-chat-0.2.0) shipped a Python whose jinja2 lacks the sandbox submodule,
+    # so serve died at import with a bare ModuleNotFoundError and no hint what to repair. Check the submodule
+    # itself, not just the package: `import jinja2` succeeds while `jinja2.sandbox` is missing (frontend.py
+    # renders the model's chat template with ImmutableSandboxedEnvironment). Same shape as
+    # tools/nvfp4_local_pack.py's require_packages(): name the missing module and the repair command.
+    def _present(name: str) -> bool:
+        try:
+            return importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError):
+            return False
+
+    missing = [m for m in ("jinja2.sandbox",) if not _present(m)]
+    if missing:
+        req = ROOT / "requirements.txt"
+        sys.exit("serve needs the Python package jinja2 (pinned jinja2==3.1.6 in %s), but %s is not importable "
+                 "for %s.\nInstall it with:  %s -m pip install -r %s"
+                 % (req, ", ".join(missing), sys.executable, sys.executable, req))
+
+
+require_runtime_packages()
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
