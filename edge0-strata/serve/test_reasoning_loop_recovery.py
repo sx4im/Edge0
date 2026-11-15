@@ -36,6 +36,29 @@ class ReasoningLoopRecovery(unittest.TestCase):
         self.assertEqual(reasoning_repeat_coverage(' '.join(str(i) for i in range(4000))), 0)
         self.assertGreater(reasoning_repeat_coverage(self.loop), .9)
 
+    def hmm_filler(self, units):
+        """#236: irregular "Hmm, hmm" filler; each word or punctuation mark is about one model token."""
+        variants = ["Hmm, hmm \u2014 hmm.", "Hmm, hmm, hmm, hmm.", "Hmm, hmm.", "Hmm, hmm, hmm.",
+                    "Hmm. Hmm, hmm, hmm.", "Hmm, hmm \u2014 hmm, hmm.", "Hmm, hmm!", "Hmm, hmm, hmm, hmm, hmm."]
+        return " ".join(variants[i % len(variants)] for i in range(units))
+
+    def test_short_hmm_filler_turn_is_detected(self):
+        """#236: a "Hmm, hmm" turn of a few hundred words never reached the 2,000-word window."""
+        self.assertGreater(reasoning_repeat_coverage(self.hmm_filler(80)), .9)    # ~540 words
+        self.assertGreater(reasoning_repeat_coverage(self.hmm_filler(60)), .9)    # ~400 words, under 512 tokens
+
+    def test_short_normal_reasoning_stays_zero(self):
+        normal = ("Let me look at the failing test first. The detector reads the reasoning text and checks "
+                  "whether recent passages repeat. I will open the server module and find the coverage function, "
+                  "then trace how the check is scheduled during generation. The sampling parameters stay untouched "
+                  "unless recovery fires, in which case only temperature and presence penalty are raised. "
+                  "Next I need to verify the fix against the existing suite and confirm the new cases fail before "
+                  "the change and pass after it. The token budget for this request is large, so the engine will "
+                  "keep generating until the parser closes the thinking block or a tool call arrives. "
+                  "I should also check the history recording and the batch status fields for consistency. ")
+        self.assertEqual(reasoning_repeat_coverage(normal), 0)
+        self.assertEqual(reasoning_repeat_coverage(normal * 2), 0)
+
     def test_a_loop_written_as_one_long_word(self):
         """#1753: a 24k-digit string cycling an 11-digit pattern is one word to the split and never one token twice."""
         self.assertEqual(reasoning_repeat_coverage('Counting the digits of 9^104. ' + '58747693387' * 3000), 1)
@@ -120,6 +143,18 @@ class ReasoningLoopRecovery(unittest.TestCase):
         self.assertEqual(len(engine.calls), 1)                   # no second pass
         self.assertEqual(events[-1][1]['finish'], 'length')
         self.assertLess(events[-1][1]['completion_tokens'], 20000)
+        self.assertEqual(events[-1][1]['reasoning_recoveries'], 0)
+
+    def test_stop_mode_ends_a_short_hmm_filler_turn(self):
+        """#236: the filler turn ends at a loop check (~1,024 tokens), not at the cap."""
+        engine = RecordingEngine(self.tok, [self.hmm_filler(80)])
+        service = Service(engine, self.tok, None)
+        service.answer_room = False      # these cases test the loop guards at the cap itself
+        service.reasoning_loop_recovery = "stop"
+        events = list(service.run(self.ids, True, [], 40000, {}, threading.Event()))
+        self.assertEqual(len(engine.calls), 1)                   # no second pass
+        self.assertEqual(events[-1][1]['finish'], 'length')
+        self.assertLess(events[-1][1]['completion_tokens'], 2000)
         self.assertEqual(events[-1][1]['reasoning_recoveries'], 0)
 
     def test_stop_mode_ends_a_loop_written_as_one_long_word(self):
