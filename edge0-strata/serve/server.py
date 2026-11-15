@@ -250,8 +250,11 @@ def reasoning_repeat_coverage(text):
         return 1.0
     words = re.findall(r"\w+|[^\w\s]", text.lower())[-LOOP_HISTORY_WORDS:]
     width, window = 12, 2000
-    if len(words) < window:
+    if len(words) < 4 * width:
         return 0.0
+    # #236: a short turn loops too (a few hundred words of "Hmm" filler never reaches 2,000), so judge the words
+    # there are instead of returning 0.0; a 12-word passage seen three times is the same evidence at any length.
+    window = min(window, len(words))
     grams = [tuple(words[i:i + width]) for i in range(len(words) - width + 1)]
     counts = collections.Counter(grams)
     start = max(0, len(words) - window)

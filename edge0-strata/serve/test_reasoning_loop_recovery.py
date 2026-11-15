@@ -36,6 +36,33 @@ class ReasoningLoopRecovery(unittest.TestCase):
         self.assertEqual(reasoning_repeat_coverage(' '.join(str(i) for i in range(4000))), 0)
         self.assertGreater(reasoning_repeat_coverage(self.loop), .9)
 
+    def test_short_hmm_filler_is_a_loop(self):
+        """#236: a few hundred words of "Hmm" filler never reach the old 2,000-word window, so the detector
+        returned 0.0 for the 132 missed turns; the same 12-word / three-times evidence judges the words there are."""
+        hmm = 'Hmm, hmm — hmm.\n\nHmm, hmm, hmm, hmm. Hmm, hmm, hmm.\n\nHmm, hmm. Hmm, hmm, hmm, hmm.\n\n' * 30
+        self.assertGreaterEqual(reasoning_repeat_coverage(hmm), .25)
+        short = 'Hmm, hmm — hmm.\n\n' * 12     # ~70 words: below one 512-token check, judged all the same
+        self.assertGreaterEqual(reasoning_repeat_coverage(short), .25)
+        self.assertEqual(reasoning_repeat_coverage('Hmm, hmm. ' * 10), 0)   # too little text to judge
+        varied = ('First I check the token expiry against the server clock. Next I look at how sessions are stored. '
+                  'The cache uses a least-recently-used structure with a five minute TTL per entry. '
+                  'Testing needs a fake clock so expiry can be exercised without waiting in real time. '
+                  'Edge cases include tokens issued exactly at the boundary and clocks skewed either way.')
+        self.assertEqual(reasoning_repeat_coverage(varied), 0)
+
+    def test_stop_mode_ends_a_short_hmm_loop(self):
+        """#236: the live path only looks every 512 tokens, so a ~1,800-token "Hmm" turn is caught at the first look."""
+        hmm = 'Hmm, hmm — hmm.\n\n' * 100
+        engine = RecordingEngine(self.tok, [hmm])
+        service = Service(engine, self.tok, None)
+        service.answer_room = False      # these cases test the loop guards at the cap itself
+        service.reasoning_loop_recovery = "stop"
+        events = list(service.run(self.ids, True, [], 40000, {}, threading.Event()))
+        self.assertEqual(len(engine.calls), 1)                   # no second pass
+        self.assertEqual(events[-1][1]['finish'], 'length')
+        self.assertLess(events[-1][1]['completion_tokens'], 1200)
+        self.assertEqual(events[-1][1]['reasoning_recoveries'], 0)
+
     def test_a_loop_written_as_one_long_word(self):
         """#1753: a 24k-digit string cycling an 11-digit pattern is one word to the split and never one token twice."""
         self.assertEqual(reasoning_repeat_coverage('Counting the digits of 9^104. ' + '58747693387' * 3000), 1)
